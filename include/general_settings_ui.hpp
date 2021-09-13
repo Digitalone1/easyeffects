@@ -24,8 +24,9 @@
 #include <glibmm.h>
 #include <glibmm/i18n.h>
 #include <gtkmm.h>
-#include <filesystem>
+//#include <filesystem>
 #include "application.hpp"
+#include "libportal/background.h"
 #include "util.hpp"
 
 class GeneralSettingsUi : public Gtk::Box {
@@ -37,7 +38,13 @@ class GeneralSettingsUi : public Gtk::Box {
   auto operator=(const GeneralSettingsUi&&) -> GeneralSettingsUi& = delete;
   ~GeneralSettingsUi() override;
 
+  inline static XdpPortal* portal = nullptr;
+
   static void add_to_stack(Gtk::Stack* stack, Application* app);
+
+  static void update_background_portal(const bool& state);
+
+  static void on_request_background_called(GObject* source, GAsyncResult* result, gpointer data);
 
  private:
   const std::string log_tag = "general_settings_ui: ";
@@ -53,9 +60,9 @@ class GeneralSettingsUi : public Gtk::Box {
 
   std::vector<sigc::connection> connections;
 
-  void init_autostart_switch();
+  // void init_autostart_switch();
 
-  auto on_enable_autostart(bool state) -> bool;
+  // auto on_enable_autostart(const bool& state) -> bool;
 
   void on_reset_settings();
 };

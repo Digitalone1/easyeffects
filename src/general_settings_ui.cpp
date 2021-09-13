@@ -23,6 +23,13 @@ GeneralSettingsUi::GeneralSettingsUi(BaseObjectType* cobject,
                                      const Glib::RefPtr<Gtk::Builder>& builder,
                                      Application* application)
     : Gtk::Box(cobject), settings(Gio::Settings::create("com.github.wwmm.easyeffects")), app(application) {
+  // portal initialization
+  if (portal == nullptr) {
+    portal = xdp_portal_new();
+  }
+
+  update_background_portal(settings->get_boolean("enable-autostart"));
+
   // loading builder widgets
 
   theme_switch = builder->get_widget<Gtk::Switch>("theme_switch");
@@ -36,7 +43,7 @@ GeneralSettingsUi::GeneralSettingsUi(BaseObjectType* cobject,
 
   // signals connection
 
-  enable_autostart->signal_state_set().connect(sigc::mem_fun(*this, &GeneralSettingsUi::on_enable_autostart), false);
+  // enable_autostart->signal_state_set().connect(sigc::mem_fun(*this, &GeneralSettingsUi::on_enable_autostart), false);
 
   reset_settings->signal_clicked().connect(sigc::mem_fun(*this, &GeneralSettingsUi::on_reset_settings));
 
@@ -46,8 +53,13 @@ GeneralSettingsUi::GeneralSettingsUi(BaseObjectType* cobject,
   settings->bind("process-all-inputs", process_all_inputs, "active");
   settings->bind("process-all-outputs", process_all_outputs, "active");
   settings->bind("shutdown-on-window-close", shutdown_on_window_close, "active");
+  settings->bind("enable-autostart", enable_autostart, "active");
 
-  init_autostart_switch();
+  settings->signal_changed("enable-autostart").connect([=, this](const auto& key) {
+    update_background_portal(settings->get_boolean(key));
+  });
+
+  // init_autostart_switch();
 }
 
 GeneralSettingsUi::~GeneralSettingsUi() {
@@ -66,13 +78,48 @@ void GeneralSettingsUi::add_to_stack(Gtk::Stack* stack, Application* app) {
   stack->add(*ui, "general_spectrum", _("General"));
 }
 
+void GeneralSettingsUi::update_background_portal(const bool& state) {
+  XdpBackgroundFlags background_flags = XDP_BACKGROUND_FLAG_NONE;
+
+  g_autoptr(GPtrArray) command_line = nullptr;
+
+  if (state) {
+    command_line = g_ptr_array_new_with_free_func(g_free);
+
+    g_ptr_array_add(command_line, g_strdup("easyeffects"));
+    g_ptr_array_add(command_line, g_strdup("--gapplication-service"));
+
+    background_flags = XDP_BACKGROUND_FLAG_AUTOSTART;
+  }
+
+  auto* reason = g_strdup("EasyEffects Autostart");
+
+  xdp_portal_request_background(portal, nullptr, reason, command_line, background_flags, NULL,
+                                on_request_background_called, nullptr);
+
+  g_free(reason);
+}
+
+void GeneralSettingsUi::on_request_background_called(GObject* source, GAsyncResult* result, gpointer data) {
+  g_autoptr(GError) error = nullptr;
+
+  if (!xdp_portal_request_background_finish(portal, result, &error)) {
+    util::warning(std::string("portal: background request failed:") + ((error) ? error->message : "unknown reason"));
+
+    return;
+  }
+
+  util::debug("portal: background request successfully completed");
+}
+
+/*
 void GeneralSettingsUi::init_autostart_switch() {
   const auto& path = Glib::get_user_config_dir() + "/autostart/easyeffects-service.desktop";
 
   enable_autostart->set_active(std::filesystem::is_regular_file(path) ? true : false);
 }
 
-auto GeneralSettingsUi::on_enable_autostart(bool state) -> bool {
+auto GeneralSettingsUi::on_enable_autostart(const bool& state) -> bool {
   std::filesystem::path autostart_dir{Glib::get_user_config_dir() + "/autostart"};
 
   if (!std::filesystem::is_directory(autostart_dir)) {
@@ -108,6 +155,7 @@ auto GeneralSettingsUi::on_enable_autostart(bool state) -> bool {
 
   return false;
 }
+*/
 
 void GeneralSettingsUi::on_reset_settings() {
   settings->reset("");

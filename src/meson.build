@@ -118,6 +118,7 @@ easyeffects_deps = [
 	dependency('sndfile'),
 	dependency('fftw3f'),
 	dependency('libebur128',version: '>=1.2.0'),
+	dependency('libportal'),
 	dependency('rnnoise'),
 	dependency('samplerate'),
 	dependency('rubberband'),
