@@ -77,6 +77,236 @@ void update_bypass_state(Application* self) {
   util::info(((state) != 0 ? "enabling" : "disabling") + " global bypass"s);
 }
 
+void on_global_shortcut_activated(GDBusConnection* connection,
+                                  const gchar* sender_name,
+                                  const gchar* object_path,
+                                  const gchar* interface_name,
+                                  const gchar* signal_name,
+                                  GVariant* parameters,
+                                  gpointer user_data) {
+  util::debug("Global Shortcut activated signal.");
+
+  auto* self = EE_APP(user_data);
+
+  const gchar* shortcut_id;
+
+  g_variant_get(parameters, "(&s)", &shortcut_id);
+
+  if (g_strcmp0(shortcut_id, "toggle_easyeffects_bypass") == 0) {
+    g_action_group_activate_action(G_ACTION_GROUP(self), "toggle_bypass", nullptr);
+  }
+}
+
+void on_global_shortcuts_created_session(GDBusProxy* self,
+                                         gchar* sender_name,
+                                         gchar* signal_name,
+                                         GVariant* parameters,
+                                         gpointer user_data) {
+  if (g_strcmp0(signal_name, "Response") != 0) {
+    return;
+  }
+
+  auto* app_self = EE_APP(user_data);
+
+  if (!app_self->dbus_conn) {
+    util::warning("D-Bus connection not initialized on CreateSession response");
+
+    return;
+  }
+
+  guint32 response = 0;
+  GVariant* results = nullptr;
+
+  g_variant_get(parameters, "(u@a{sv})", &response, &results);
+
+  if (response != 0 || !results) {
+    util::warning("Invalid result on Global Shortcuts CreateSession response.");
+
+    return;
+  }
+
+  gchar* session_handle = nullptr;
+
+  if (g_variant_lookup(results, "session_handle", "s", &session_handle) && !session_handle) {
+    util::warning("Missing session handle on Global Shortcuts CreateSession response.");
+
+    return;
+  }
+
+  // util::debug("Session Handle on CreateSession response: "s + session_handle);
+
+  // Save D-Bus session handle string.
+  GVariant* session_handle_obj = g_variant_new_object_path(session_handle);
+
+  /*
+   * Listen the D-Bus "Activated" signal of the GlobalShortcuts interface and bind the callback.
+   */
+
+  g_dbus_connection_signal_subscribe(app_self->dbus_conn, "org.freedesktop.portal.Desktop",
+                                     "org.freedesktop.portal.GlobalShortcuts", nullptr,
+                                     "/org/freedesktop/portal/desktop", nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+                                     on_global_shortcut_activated, self, nullptr);
+
+  /*
+   * Prepare option data for the global shortcuts binding.
+   */
+
+  GVariantBuilder builder_bind_shortcuts;
+  g_variant_builder_init(&builder_bind_shortcuts, G_VARIANT_TYPE("a(sa{sv})"));
+
+  GVariantBuilder builder_shortcut;
+  g_variant_builder_init(&builder_shortcut, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&builder_shortcut, "{sv}", "description", g_variant_new_string("Toggle EasyEffects Bypass"));
+  g_variant_builder_add(&builder_shortcut, "{sv}", "preferred_trigger", g_variant_new_string("<Ctrl>b"));
+  GVariant* shortcut_data = g_variant_builder_end(&builder_shortcut);
+
+  GVariant* shortcut_id[2] = {g_variant_new_string("toggle_easyeffects_bypass"), shortcut_data};
+  g_variant_builder_add_value(&builder_bind_shortcuts, g_variant_new_tuple(shortcut_id, 2));
+
+  GVariant* shortcuts_list_data = g_variant_builder_end(&builder_bind_shortcuts);
+
+  GVariantBuilder builder_handle_token;
+  g_variant_builder_init(&builder_handle_token, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&builder_handle_token, "{sv}", "handle_token",
+                        g_variant_new_string(util::random_string(64).c_str()));
+  GVariant* handle_token_data = g_variant_builder_end(&builder_handle_token);
+
+  GVariant* parent_window = g_variant_new_string("");
+  GVariant* bind_shortcuts_args[4] = {session_handle_obj, shortcuts_list_data, parent_window, handle_token_data};
+
+  /*
+   * Use the D-Bus session to register the global shortcuts with BindShortcuts method.
+   */
+
+  GError* error = nullptr;
+
+  GVariant* ret = g_dbus_connection_call_sync(
+      app_self->dbus_conn, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+      "org.freedesktop.portal.GlobalShortcuts", "BindShortcuts", g_variant_new_tuple(bind_shortcuts_args, 4), nullptr,
+      G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, &error);
+
+  if (!ret) {
+    util::warning("Failed to register XDG Global Shortcuts.");
+
+    if (error != nullptr) {
+      util::warning(std::string(error->message));
+
+      g_clear_error(&error);
+    }
+
+    return;
+  }
+
+  util::debug("XDG Global Shortcuts correctly registered.");
+}
+
+void global_shortcuts_create_session(Application* self) {
+  /*
+   * This implementation has been written referring to:
+   * - https://git.dec05eba.com/gpu-screen-recorder-gtk/tree/src/global_shortcuts.c
+   * - https://github.com/ghostty-org/ghostty/pull/7083
+   */
+
+  const std::string request_handle_token = util::random_string(64);
+
+  // util::debug("CreateSession request_handle_token: " + request_handle_token);
+
+  /*
+   * Create a new D-Bus connection and construct the request handle path.
+   *
+   * The handle has the following format:
+   * - /org/freedesktop/portal/desktop/request/SENDER/TOKEN
+   * where SENDER is the caller's unique name, with the initial ':' removed and all '.' replaced by '_',
+   * and TOKEN is a unique token that the caller provides with the handle_token key in the options vardict.
+   *
+   * Documentation: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Request.html
+   */
+
+  self->dbus_conn = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
+
+  if (!self->dbus_conn) {
+    util::warning("Failed to create a D-Bus connection");
+
+    return;
+  }
+
+  const gchar* unique_name = g_dbus_connection_get_unique_name(self->dbus_conn);
+
+  if (!unique_name) {
+    util::warning("Failed to get unique D-Bus connection name.");
+
+    return;
+  }
+
+  std::string sender = unique_name;
+
+  if (!sender.empty() && sender.starts_with(":")) {
+    sender.erase(0, 1);
+  }
+
+  // The following fails if we use "."/"_" because the signature needs a single `char` rather than
+  // `const char*` (pointer to characters) for old/new_value arguments.
+  std::replace(sender.begin(), sender.end(), '.', '_');
+
+  const std::string request_handle_path =
+      "/org/freedesktop/portal/desktop/request/" + sender + "/" + request_handle_token;
+
+  /*
+   * Create a D-Bus Proxy to listen and receive the Response signal.
+   *
+   * In theory this should be done after the call. But, as stated in the Ghostty source code, it's
+   * better to make it BEFORE because an "overeager server implementation could easily send the
+   * Response signal before the client is even ready".
+   */
+
+  GDBusProxy* proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START, nullptr,
+                                                    "org.freedesktop.portal.Desktop", request_handle_path.c_str(),
+                                                    "org.freedesktop.portal.Request", nullptr, nullptr);
+
+  if (!proxy) {
+    util::warning("Failed to create a D-Bus proxy");
+
+    return;
+  }
+
+  g_signal_connect(proxy, "g-signal", G_CALLBACK(on_global_shortcuts_created_session), self);
+
+  /*
+   * Create a D-Bus session using CreateSession method.
+   */
+
+  const std::string session_token_base_name = "easyeffects_";
+  const std::string session_handle_token =
+      session_token_base_name + util::random_string(64 - session_token_base_name.length());
+
+  util::debug("Create session session_handle_token: " + session_handle_token);
+
+  GVariantBuilder builder_create_session;
+
+  g_variant_builder_init(&builder_create_session, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&builder_create_session, "{sv}", "handle_token",
+                        g_variant_new_string(request_handle_token.c_str()));
+  g_variant_builder_add(&builder_create_session, "{sv}", "session_handle_token",
+                        g_variant_new_string(session_handle_token.c_str()));
+
+  GVariant* create_session_data = g_variant_builder_end(&builder_create_session);
+
+  GVariant* ret = g_dbus_connection_call_sync(
+      self->dbus_conn, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+      "org.freedesktop.portal.GlobalShortcuts", "CreateSession", g_variant_new_tuple(&create_session_data, 1), nullptr,
+      G_DBUS_CALL_FLAGS_NO_AUTO_START, 1000, nullptr, nullptr);
+
+  if (!ret) {
+    util::warning("Faild to create a D-Bus session");
+
+    return;
+  }
+
+  util::debug("Established a new D-Bus session.");
+
+  // util::debug(g_variant_print(ret, 1));
+}
+
 void on_startup(GApplication* gapp) {
   G_APPLICATION_CLASS(application_parent_class)->startup(gapp);
 
@@ -463,7 +693,7 @@ void application_class_init(ApplicationClass* klass) {
 }
 
 void application_init(Application* self) {
-  std::array<GActionEntry, 8> entries{};
+  std::array<GActionEntry, 9> entries{};
 
   entries[0] = {"quit",
                 [](GSimpleAction* action, GVariant* parameter, gpointer app) {
@@ -581,6 +811,20 @@ void application_init(Application* self) {
                 },
                 nullptr, nullptr, nullptr};
 
+  entries[8] = {"toggle_bypass",
+                [](GSimpleAction* action, GVariant* parameter, gpointer app) {
+                  util::debug("The user pressed <Ctrl>B. Toggling the global bypass.");
+
+                  auto* self = EE_APP(app);
+
+                  const auto state = g_settings_get_boolean(self->settings, "bypass");
+
+                  const auto new_state = (state == 0) ? 1 : 0;
+
+                  g_settings_set_boolean(self->settings, "bypass", new_state);
+                },
+                nullptr, nullptr, nullptr};
+
   g_action_map_add_action_entries(G_ACTION_MAP(self), entries.data(), entries.size(), self);
 
   std::array<const char*, 2> quit_accels = {"<Ctrl>Q", nullptr};
@@ -589,10 +833,16 @@ void application_init(Application* self) {
   std::array<const char*, 2> help_accels = {"F1", nullptr};
   std::array<const char*, 2> fullscreen_accels = {"F11", nullptr};
 
+  std::array<const char*, 2> toggle_bypass_accels = {"<Ctrl>B", nullptr};
+
   gtk_application_set_accels_for_action(GTK_APPLICATION(self), "app.quit", quit_accels.data());
   gtk_application_set_accels_for_action(GTK_APPLICATION(self), "app.hide_windows", hide_windows_accels.data());
   gtk_application_set_accels_for_action(GTK_APPLICATION(self), "app.help", help_accels.data());
   gtk_application_set_accels_for_action(GTK_APPLICATION(self), "app.fullscreen", fullscreen_accels.data());
+  gtk_application_set_accels_for_action(GTK_APPLICATION(self), "app.toggle_bypass", toggle_bypass_accels.data());
+
+  // Register XDG Global Shortcuts.
+  global_shortcuts_create_session(self);
 }
 
 auto application_new() -> GApplication* {

@@ -19,6 +19,13 @@
 
                         <child>
                             <object class="GtkShortcutsShortcut">
+                                <property name="accelerator">&lt;Ctrl&gt;b</property>
+                                <property name="title" translatable="yes">Toggle Bypass</property>
+                            </object>
+                        </child>
+
+                        <child>
+                            <object class="GtkShortcutsShortcut">
                                 <property name="accelerator">F11</property>
                                 <property name="title" translatable="yes">Fullscreen/Restore from fullscreen</property>
                             </object>

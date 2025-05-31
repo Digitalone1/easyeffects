@@ -61,6 +61,8 @@ struct _Application {
   StreamInputEffects* sie;
   PresetsManager* presets_manager;
 
+  GDBusConnection* dbus_conn;
+
   Data* data;
 };
 
