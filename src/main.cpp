@@ -357,16 +357,16 @@ static int runSecondaryInstance(const QLockFile& lockFile,
 }
 
 int main(int argc, char* argv[]) {
+  // Set the desktop app ID before QApplication startup so portal integration
+  // does not try to re-register a different/late app ID on the same bus.
+  QGuiApplication::setDesktopFileName(QStringLiteral(APPLICATION_ID));
+
   QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
   QCoreApplication::setOrganizationDomain(ORGANIZATION_DOMAIN);
   QCoreApplication::setApplicationName(APPLICATION_DOMAIN);
   QLoggingCategory::setFilterRules("easyeffects.debug=false");
 
   KIconTheme::initTheme();
-
-  // Set the desktop app ID before QApplication startup so portal integration
-  // does not try to re-register a different/late app ID on the same bus.
-  QGuiApplication::setDesktopFileName(QStringLiteral(APPLICATION_ID));
 
   QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(APPLICATION_ID)));
 
